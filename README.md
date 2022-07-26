@@ -1,1 +1,1 @@
-# feature-flags
+# featureflags
