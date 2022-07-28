@@ -68,6 +68,7 @@ func NewFeatureListFromConfigMap(ctx context.Context, clientset kubernetes.Inter
 		features:  features,
 		clientset: clientset,
 		queue:     workqueue.NewRateLimitingQueue(workqueue.DefaultControllerRateLimiter()),
+		notify:    make(chan struct{}),
 		informer:  informer,
 	}, nil
 }
