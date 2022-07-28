@@ -99,7 +99,11 @@ func (l *FeatureList) WatchConfigMap() context.CancelFunc {
 				if !l.synced {
 					return
 				}
-				l.logger.Debug("enqueueing create object")
+				cm := obj.(*corev1.ConfigMap)
+				if cm.Name != "feature-flags" {
+					return
+				}
+
 				l.enqueueEvent(obj)
 			},
 			UpdateFunc: func(oldObj, newObj interface{}) {
@@ -108,7 +112,11 @@ func (l *FeatureList) WatchConfigMap() context.CancelFunc {
 				if !l.synced {
 					return
 				}
-				l.logger.Debug("enqueueing update object")
+				cm := newObj.(*corev1.ConfigMap)
+				if cm.Name != "feature-flags" {
+					return
+				}
+
 				l.enqueueEvent(newObj)
 			},
 			DeleteFunc: nil,
@@ -166,7 +174,6 @@ func (l *FeatureList) processNexItem(stopCh <-chan struct{}) bool {
 	defer l.queue.Done(event)
 
 	err := l.processItem(event)
-	l.logger.Debug("processing object")
 	if err != nil {
 		l.logger.Error(fmt.Sprintf("failed to process event %s, giving up: %v", event, err))
 		l.queue.Forget(event)
@@ -180,10 +187,7 @@ func (l *FeatureList) processNexItem(stopCh <-chan struct{}) bool {
 
 func (l *FeatureList) processItem(obj interface{}) error {
 	cm := obj.(*corev1.ConfigMap)
-	if cm.Name != "feature-flags" {
-		//This is not the configmap we are looking for
-		return nil
-	}
+
 	features, err := buildFeatureList(cm)
 	if err != nil {
 		return err
