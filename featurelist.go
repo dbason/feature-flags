@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"go.uber.org/zap"
@@ -14,6 +15,7 @@ import (
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/informers"
+	informercorev1 "k8s.io/client-go/informers/core/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/workqueue"
@@ -26,7 +28,8 @@ type FeatureList struct {
 	clientset kubernetes.Interface
 	queue     workqueue.RateLimitingInterface
 	notify    chan struct{}
-	namespace string
+	informer  informercorev1.ConfigMapInformer
+	synced    bool
 }
 
 type featureConfig struct {
@@ -52,13 +55,20 @@ func NewFeatureListFromConfigMap(ctx context.Context, clientset kubernetes.Inter
 		return &FeatureList{}, err
 	}
 
+	factory := informers.NewSharedInformerFactoryWithOptions(
+		clientset,
+		time.Minute,
+		informers.WithNamespace(namespace),
+	)
+	informer := factory.Core().V1().ConfigMaps()
+
 	return &FeatureList{
 		ctx:       ctx,
 		logger:    lg.Named("feature-flags"),
 		features:  features,
 		clientset: clientset,
 		queue:     workqueue.NewRateLimitingQueue(workqueue.DefaultControllerRateLimiter()),
-		namespace: namespace,
+		informer:  informer,
 	}, nil
 }
 
@@ -74,20 +84,31 @@ func (l *FeatureList) GetFeature(name string) FeatureFlag {
 
 // Update and notify will create a watch on the configmap and return a notfiy channel
 // that gets written to when the configmap is updated
-func (l *FeatureList) UpdateAndNotify() (<-chan struct{}, context.CancelFunc) {
+func (l *FeatureList) WatchConfigMap() context.CancelFunc {
 	defer runtime.HandleCrash()
-	defer l.queue.ShutDown()
 
 	ctx, cancel := context.WithCancel(l.ctx)
 
-	factory := informers.NewSharedInformerFactory(l.clientset, time.Minute)
-	informer := factory.Core().V1().ConfigMaps()
-	informer.Informer().AddEventHandler(
+	mux := &sync.RWMutex{}
+
+	l.informer.Informer().AddEventHandler(
 		cache.ResourceEventHandlerFuncs{
 			AddFunc: func(obj interface{}) {
+				mux.RLock()
+				defer mux.RUnlock()
+				if !l.synced {
+					return
+				}
+				l.logger.Debug("enqueueing create object")
 				l.enqueueEvent(obj)
 			},
 			UpdateFunc: func(oldObj, newObj interface{}) {
+				mux.RLock()
+				defer mux.RUnlock()
+				if !l.synced {
+					return
+				}
+				l.logger.Debug("enqueueing update object")
 				l.enqueueEvent(newObj)
 			},
 			DeleteFunc: nil,
@@ -95,21 +116,30 @@ func (l *FeatureList) UpdateAndNotify() (<-chan struct{}, context.CancelFunc) {
 	)
 
 	l.logger.Info("starting configmap watch collector")
-	go informer.Informer().Run(ctx.Done())
+	go l.informer.Informer().Run(ctx.Done())
 
-	if ok := cache.WaitForCacheSync(l.ctx.Done(), informer.Informer().HasSynced); !ok {
-		defer close(l.notify)
+	cacheSynced := cache.WaitForNamedCacheSync("feature-flags", l.ctx.Done(), l.informer.Informer().HasSynced)
+	mux.Lock()
+	l.synced = cacheSynced
+	mux.Unlock()
+
+	if !cacheSynced {
 		defer cancel()
+		close(l.notify)
 		l.logger.Error("failed to wait for caches")
-		return l.notify, cancel
+		return cancel
 	}
 
 	go wait.UntilWithContext(ctx, func(ctx context.Context) {
-		for l.processNexItem() {
+		for l.processNexItem(ctx.Done()) {
 		}
 	}, time.Second)
 
-	return l.notify, cancel
+	return cancel
+}
+
+func (l *FeatureList) NotifyChange() <-chan struct{} {
+	return l.notify
 }
 
 func (l *FeatureList) enqueueEvent(obj interface{}) {
@@ -120,7 +150,15 @@ func (l *FeatureList) enqueueEvent(obj interface{}) {
 	l.queue.Add(obj)
 }
 
-func (l *FeatureList) processNexItem() bool {
+func (l *FeatureList) processNexItem(stopCh <-chan struct{}) bool {
+	select {
+	case <-stopCh:
+		close(l.notify)
+		l.queue.ShutDown()
+		return false
+	default:
+	}
+
 	event, shutdown := l.queue.Get()
 	if shutdown {
 		return false
@@ -128,10 +166,12 @@ func (l *FeatureList) processNexItem() bool {
 	defer l.queue.Done(event)
 
 	err := l.processItem(event)
+	l.logger.Debug("processing object")
 	if err != nil {
 		l.logger.Error(fmt.Sprintf("failed to process event %s, giving up: %v", event, err))
 		l.queue.Forget(event)
 		utilruntime.HandleError(err)
+		return true
 	}
 
 	l.queue.Forget(event)
@@ -140,7 +180,7 @@ func (l *FeatureList) processNexItem() bool {
 
 func (l *FeatureList) processItem(obj interface{}) error {
 	cm := obj.(*corev1.ConfigMap)
-	if cm.Name != "feature-flags" || cm.Namespace != l.namespace {
+	if cm.Name != "feature-flags" {
 		//This is not the configmap we are looking for
 		return nil
 	}
@@ -148,6 +188,7 @@ func (l *FeatureList) processItem(obj interface{}) error {
 	if err != nil {
 		return err
 	}
+	l.logger.Debug("sending notification")
 	l.features = features
 	l.notify <- struct{}{}
 	return nil
