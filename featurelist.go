@@ -117,6 +117,11 @@ func (l *FeatureList) WatchConfigMap() context.CancelFunc {
 				if cm.Name != "feature-flags" {
 					return
 				}
+				new := newObj.(*corev1.ConfigMap)
+				old := oldObj.(*corev1.ConfigMap)
+				if new.ResourceVersion == old.ResourceVersion {
+					return
+				}
 
 				l.enqueueEvent(newObj)
 			},
