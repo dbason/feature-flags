@@ -83,6 +83,14 @@ func (l *FeatureList) GetFeature(name string) FeatureFlag {
 	return nil
 }
 
+func (l *FeatureList) FeatureIsEnabled(name string) bool {
+	feature := l.GetFeature("manage-opensearch")
+	if feature == nil {
+		return false
+	}
+	return feature.IsEnabled()
+}
+
 // Update and notify will create a watch on the configmap and return a notfiy channel
 // that gets written to when the configmap is updated
 func (l *FeatureList) WatchConfigMap() context.CancelFunc {
