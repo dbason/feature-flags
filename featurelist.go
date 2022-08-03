@@ -84,7 +84,7 @@ func (l *FeatureList) GetFeature(name string) FeatureFlag {
 }
 
 func (l *FeatureList) FeatureIsEnabled(name string) bool {
-	feature := l.GetFeature("manage-opensearch")
+	feature := l.GetFeature(name)
 	if feature == nil {
 		return false
 	}
