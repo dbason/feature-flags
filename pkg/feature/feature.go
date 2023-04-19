@@ -1,4 +1,4 @@
-package featureflags
+package feature
 
 type FeatureFlag interface {
 	Name() string
