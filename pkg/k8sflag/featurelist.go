@@ -1,4 +1,4 @@
-package featureflags
+package k8sflag
 
 import (
 	"context"
@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/dbason/featureflags/pkg/feature"
 	"go.uber.org/zap"
 	"gopkg.in/yaml.v3"
 	corev1 "k8s.io/api/core/v1"
@@ -24,7 +25,7 @@ import (
 type FeatureList struct {
 	ctx       context.Context
 	logger    *zap.Logger
-	features  []FeatureFlag
+	features  []feature.FeatureFlag
 	clientset kubernetes.Interface
 	queue     workqueue.RateLimitingInterface
 	notify    chan struct{}
@@ -74,7 +75,7 @@ func NewFeatureListFromConfigMap(ctx context.Context, clientset kubernetes.Inter
 }
 
 // GetFeature returns a named feature flag
-func (l *FeatureList) GetFeature(name string) FeatureFlag {
+func (l *FeatureList) GetFeature(name string) feature.FeatureFlag {
 	for _, feature := range l.features {
 		if feature.Name() == name {
 			return feature
@@ -212,8 +213,8 @@ func (l *FeatureList) processItem(obj interface{}) error {
 	return nil
 }
 
-func buildFeatureList(cm *corev1.ConfigMap) ([]FeatureFlag, error) {
-	var features []FeatureFlag
+func buildFeatureList(cm *corev1.ConfigMap) ([]feature.FeatureFlag, error) {
+	var features []feature.FeatureFlag
 	featuresConfig := map[string]featureConfig{}
 
 	config, ok := cm.Data["features"]
@@ -227,7 +228,7 @@ func buildFeatureList(cm *corev1.ConfigMap) ([]FeatureFlag, error) {
 	}
 
 	for name, config := range featuresConfig {
-		feature := NewFeature(name, config.Description, config.Enabled)
+		feature := feature.NewFeature(name, config.Description, config.Enabled)
 		features = append(features, &feature)
 	}
 
